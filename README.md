@@ -113,17 +113,52 @@ It runs two jobs on GitHub's hosted Ubuntu runners:
    - Installs the dependencies from `requirements.txt`.
    - Runs the full test suite with `pytest -v`.
 
-2. **`docker-build`** — verifies the app still packages correctly:
+2. **`build-and-verify`** — verifies the app really runs end to end:
    - Runs only **after** the `test` job succeeds (`needs: test`), so a broken
      build never gets to this stage.
-   - Builds the Docker image from the `Dockerfile`.
+   - Builds the images and starts the containers with
+     `docker compose up -d --build` (both the web app and Postgres).
+   - **Health check:** polls `http://localhost:5000/health` for up to ~45s
+     (15 attempts, 3s apart) until it responds `ok`. This confirms the app
+     actually boots and serves traffic, not just that the image builds.
+   - **Database connectivity check:** calls `http://localhost:5000/db-check`
+     to confirm the running app can reach the Postgres container.
+   - If anything fails, it prints the container logs (`docker compose logs`) to
+     help debug.
+   - Always tears the containers down at the end (`docker compose down`).
 
-If any step fails (a test breaks, a dependency won't install, or the image won't
-build), the workflow fails and GitHub marks the commit/PR with a red ❌. When
-everything passes you get a green ✔, which gives you confidence before merging.
+If any step fails (a test breaks, a dependency won't install, the image won't
+build, or the running app doesn't answer the health check), the workflow fails
+and GitHub marks the commit/PR with a red ❌. When everything passes you get a
+green ✔, which gives you confidence before merging.
 
-> The tests mock the database, so the pipeline does **not** need a running
-> Postgres service — it stays fast and self-contained.
+> The **unit tests** mock the database so they stay fast, but the
+> `build-and-verify` job spins up a **real Postgres container**, so the health
+> and DB-connectivity checks exercise the full stack.
+
+
+
+Build de la imagen Docker ✅
+Correr los tests ✅
+Verificar que todo compila y funciona ✅
+Levantar los contenedores temporalmente solo para testear ✅
+Cuando el pipeline termina, todo se destruye solo — no necesitás parar nada
+
+¿Podés acceder a la app que corre en el runner?
+No, no podés abrir el browser y entrar a localhost:5000 porque esa máquina es temporal, no tiene IP pública, y desaparece cuando termina el pipeline.
+Lo que sí podés hacer dentro del pipeline es:
+
+Levantar los contenedores con docker compose up -d
+Hacer un curl http://localhost:5000/health desde dentro del mismo runner
+Verificar que responde correctamente
+El runner para los contenedores solo al terminar
+
+¿Y para practicar localmente sin AWS?
+Para este ejercicio, el objetivo del pipeline no es dejar la app corriendo, sino verificar que:
+
+1.La imagen buildea sin errores
+2.Los tests pasan
+3.Los contenedores levantan y responden
 
 ### Where to see the results
 

@@ -26,8 +26,8 @@ jobs:
       - name: Run tests
         run: pytest -v
 
-  docker-build:
-    name: Build Docker image
+  build-and-verify:
+    name: Build, run and health-check
     runs-on: ubuntu-latest
     needs: test
 
@@ -35,5 +35,31 @@ jobs:
       - name: Check out the code
         uses: actions/checkout@v4
 
-      - name: Build the image
-        run: docker build -t hello-devops .
+      - name: Build the images and start the containers
+        run: docker compose up -d --build
+
+      - name: Health check
+        run: |
+          echo "Waiting for the app to become healthy..."
+          for i in $(seq 1 15); do
+            if curl -fs http://localhost:5000/health; then
+              echo ""
+              echo "App is up and healthy."
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 3s..."
+            sleep 3
+          done
+          echo "App did not become healthy in time."
+          exit 1
+
+      - name: Database connectivity check
+        run: curl -fs http://localhost:5000/db-check
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop the containers
+        if: always()
+        run: docker compose down
