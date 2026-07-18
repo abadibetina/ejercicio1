@@ -1,24 +1,47 @@
-name: CI
+name: CI/CD
 
-# Run on every push and on pull requests targeting any branch.
+
+# La CI consiste en validar que el nuevo código sea seguro y no rompa lo que ya existe. Por lo tanto, debe ejecutarse en cualquier rama, todo el tiempo: Ramas de Feature / Bugfix y en Pull Requests (PR).
+
+# El CD implica empaquetar la aplicación (crear la imagen Docker) y modificar un entorno real, Como esto tiene impacto, está súper restringido. 
+#¿En qué rama corre? 
+#1. En Testing/Pre-produccion: Generalmente en la rama develop o main (dependiendo de la empresa). ¿Bajo qué condición? Automática. Cada vez que un Pull Request se aprueba y se hace merge (fusión) a esta rama principal, el pipeline de CD se dispara solo, compila la imagen Docker y la despliega en el servidor de pruebas. El equipo de QA usa este entorno para probar la app.
+#2. En Producción: Generalmente en la rama main o master (dependiendo de la empresa). ¿Bajo qué condición? Manual. Cada vez que el equipo de QA aprueba la versión de Testing, un DevOps o un Release Manager hace click en un botón para disparar el pipeline de CD y desplegar la app en producción. Esto es manual porque el impacto es enorme: si algo sale mal, los usuarios finales se ven afectados.
+
+
 on:
-  push:
+  # Condición 1: Sensor de solicitudes de cambio
   pull_request:
+    branches: [ "*" ] # El asterisco significa "Cualquier rama"
+
+  # Condición 2: Sensor de subida directa o fusiones exitosas
+  push:
+    branches: [ "*" ] # Esto activa el CI ante cualquier push en cualquier rama del repositorio
 
 jobs:
+# Este pipeline cumple perfectamente con el rol de CI (Integración Continua): garantiza que el código no tenga errores de sintaxis (Job 1-test) y garantiza que la aplicación empaquetada en Docker sea capaz de conectarse a sus bases de datos en un entorno idéntico al de producción (Job 2-build-and-verify). Esto es lo que se espera de un pipeline de CI: que valide el código y la aplicación antes de que llegue a producción.
+
+#Cada job es una máquina virtual (o contenedor) completamente independiente y limpia.
+#Los Jobs: Al declarar runs-on: ubuntu-latest dentro de un job, GitHub enciende una máquina virtual nueva y vacía en sus servidores en la nube para ese job específico. Como tu pipeline tiene dos jobs (test y build-and-verify), GitHub enciende dos máquinas virtuales separadas. Lo que pasa en la máquina de test se borra por completo cuando termina y no pasa automáticamente a la máquina de build-and-verify.
+#Los Steps: Son los pasos secuenciales que se ejecutan dentro de esa misma máquina virtual. Comparten el disco duro, la memoria y las variables. Por eso, si en el Step 2 instalas Python, en el Step 3 Python estará disponible porque sigues dentro de la misma máquina.
+
   test:
     name: Run tests
     runs-on: ubuntu-latest
 
     steps:
+    #En GitHub Actions existen dos formas de ejecutar un paso: usando comandos de consola directos (con run:) o usando Actions reutilizables creadas por la comunidad o por GitHub (con uses:).
+
       - name: Check out the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # Este siempre suele ser el primer paso de todo pipeline, es un comando programado de github actions que ejecuta los comandos de git clone para traer mi codigo adentro de la maquina virtual. 
+        #Cuando la máquina virtual limpia se enciende, su disco duro está completamente vacío; no tiene tu código. Esta línea le dice a GitHub: "Oye, ve al repositorio actions/checkout en su versión 4, descarga ese script y ejecútalo para clonar mi propio código dentro de esta máquina virtual
+        #Vas a ver que el 99% de los pipelines de GitHub Actions en el mundo tienen uses: actions/checkout@v4 como su mismísimo primer paso
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5 #Instala Python en esa máquina virtual. En lugar de que tú tengas que escribir comandos aburridos de Linux para descargar, compilar e instalar Python manualmente (lo que tomaría mucho tiempo y código), usas este bloque mágico
         with:
           python-version: "3.14"
-          cache: pip
+          cache: pip #guarda tus librerías para que los siguientes despliegues sean mucho más rápidos. Cuando se instala las dependecias, Python descarga librerías pesadas desde internet (como Flask o Psycopg). Hacer esto en cada push consume tiempo y ancho de banda. ¿Dónde se guarda? GitHub tiene un servidor de almacenamiento dedicado para caché (fuera de tu máquina virtual).
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -29,7 +52,7 @@ jobs:
   build-and-verify:
     name: Build, run and health-check
     runs-on: ubuntu-latest
-    needs: test
+    needs: test # requires the test job to pass before running this job
 
     steps:
       - name: Check out the code
@@ -66,3 +89,60 @@ jobs:
       - name: Stop the containers
         if: always()
         run: docker compose down
+  
+  #######
+  #Hasta aca los dos jobs anteriores pertenecen a CI
+
+  # ==========================================
+  # AQUÍ COMIENZA TU FASE DE CD (Despliegue)
+  # ==========================================
+  # 1. Compilar la imagen de Docker de tu app.
+  # 2. Subirla a un registro de imágenes (como GitHub Packages - GHCR, que es gratis).
+
+  deploy-artifacts:
+    name: CD - Build & Publish Image
+    runs-on: ubuntu-latest
+    needs: build-and-verify # Solo si pasó los tests y la verificación en Docker Compose
+    
+
+    # --------------------------------------------------------------
+    # Condición de disparo: Solo cuando se haga push a la rama main. Esto es lo que hace que este job sea parte de CD y no de CI. La CI corre en cualquier rama, pero el CD solo corre en la rama principal (main o master) porque es la que impacta al entorno real. Cuando se aprueba un Pull Request y se hace merge a main, el pipeline toma como si se estuviera haciendo un push a la rama main.
+    # --------------------------------------------------------------
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        # Te estás conectando al registro oficial de GitHub (ghcr.io), pero las imágenes que subas estarán vinculadas directamente a tu cuenta y a tu repositorio.
+
+        #Por defecto:
+        #-Si tu repositorio de código es privado: La imagen de Docker que se genere será privada. Solo tú (o tu equipo) podrán verla o descargarla.
+        #-Si tu repositorio de código es público: La imagen de Docker será pública. Cualquier persona en el mundo podría bajarse tu imagen usando docker pull ghcr.io/tu-usuario/tu-repo/flask-app:latest.
+        
+        #No tienes que crear ni cargar ninguna de estas dos variables en los ajustes de GitHub. GitHub Actions las genera de forma mágica y automática para cada ejecución
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Esta es una de las herramientas más potentes y seguras de GitHub Actions. Cada vez que un job arranca, GitHub crea un token de seguridad temporal y de un solo uso para esa máquina virtual. Este token le da permiso a la máquina virtual para interactuar con tu propio repositorio (por ejemplo, para subir la imagen de Docker a tu sección de Packages). En cuanto el pipeline termina, ese token se destruye automáticamente
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6 # equivalente a ejecutar dos comandos clásicos de Docker en tu terminal, pero de manera optimizada para pipelines.
+        #Básicamente, reemplaza estos dos comandos manuales: 
+        #docker build -t mi-imagen . (Construir la imagen en tu máquina).
+        # docker push mi-imagen (Subir esa imagen a internet).
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # Si estuviera en false, la Action solo compilaría la imagen para verificar que el Dockerfile no tiene errores, pero la borraría al terminar el job.
+          # Al ponerlo en true, le ordenas: "Una vez que termines de compilar la imagen con éxito, conéctate al registro donde nos logueamos en el paso anterior y súbela".
+          tags: ghcr.io/${{ github.repository }}/flask-app:latest
+
+
+          #Cuando el pipeline termine, podrás ir a tu perfil de GitHub y verás que tu aplicación ahora es un paquete de software distribuible. Cualquiera que tenga acceso (o tú mismo desde otro servidor) podrá ejecutar un simple comando como:
+          #docker run -d -p 5000:5000 ghcr.io/tu-usuario/tu-repo/flask-app:latest
+          #...y tu app Flask se encenderá al instante en cualquier parte del mundo sin necesidad de instalar Python ni clonar el código fuente. ¡Eso es el corazón del empaquetado en DevOps!
