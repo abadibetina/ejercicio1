@@ -1,6 +1,7 @@
 services:
   web:
     build: .
+    restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
@@ -9,23 +10,55 @@ services:
       DB_NAME: devops
       DB_USER: devops
       DB_PASSWORD: devops
+      REDIS_HOST: cache
+      REDIS_PORT: 6379
+    networks:
+      - frontend
+      - backend
     depends_on:
       db:
+        condition: service_healthy
+      cache:
         condition: service_healthy
 
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: devops
       POSTGRES_USER: devops
       POSTGRES_PASSWORD: devops
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U devops -d devops"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  # Public edge: only the web service lives here and it is the only service
+  # that publishes a port to the host. This is the single entry point.
+  frontend:
+
+  # Private tier: web + db + cache. Marked internal so it has no route to the
+  # outside world and cannot be reached from the host. db and cache attach ONLY
+  # here, so users cannot talk to them directly.
+  backend:
+    internal: true
 
 volumes:
   pgdata:

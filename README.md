@@ -1,14 +1,26 @@
 # Hello DevOps
 
-A simple Flask web app with a Postgres database, containerized with Docker.
+A simple Flask web app backed by a Postgres database and a Redis cache,
+containerized with Docker and split across isolated networks.
+
+## Summary
+
+A hands-on DevOps practice project: a tiny Flask API is the vehicle for
+demonstrating real-world container practices. It runs three services with
+Docker Compose (`web` + Postgres + Redis), isolates the data tier on an
+internal-only network so it can't be reached from the host, adds health checks
+and a `unless-stopped` restart policy for resilience, ships unit tests for every
+endpoint, and wires it all into a GitHub Actions pipeline that tests, builds,
+and verifies the full stack boots and connects end to end.
 
 ## Endpoints
 
-| Method | Path        | Response                          |
-| ------ | ----------- | --------------------------------- |
-| GET    | `/`         | `{"message": "Hello DevOps"}`     |
-| GET    | `/health`   | `{"status": "ok"}`                |
-| GET    | `/db-check` | `{"database": "ok"}` (503 on error) |
+| Method | Path           | Response                             |
+| ------ | -------------- | ------------------------------------ |
+| GET    | `/`            | `{"message": "Hello DevOps"}`        |
+| GET    | `/health`      | `{"status": "ok"}`                   |
+| GET    | `/db-check`    | `{"database": "ok"}` (503 on error)  |
+| GET    | `/cache-check` | `{"cache": "ok"}` (503 on error)     |
 
 ## Requirements
 
@@ -165,6 +177,105 @@ Para este ejercicio, el objetivo del pipeline no es dejar la app corriendo, sino
 Push the repository to GitHub, then open the **Actions** tab. Each push/PR shows
 a run with the live logs of every step.
 
+## Network architecture
+
+The services are split across two Docker networks so that the data tier is
+never directly reachable from the outside — only the web app is.
+
+```
+                    ┌─────────────────────────────────────┐
+   User / host      │              frontend               │
+  (localhost:5000) ─┼──▶ [ web ]                           │  normal network
+                    │       │                              │
+                    └───────┼──────────────────────────────┘
+                            │
+                    ┌───────┼──────────────────────────────┐
+                    │       ▼      backend (internal)       │  internal: true
+                    │   [ web ] ──▶ [ db ]      [ cache ]   │  (no internet,
+                    │                                       │   no host access)
+                    └───────────────────────────────────────┘
+```
+
+- **`frontend`** — public edge. Only `web` is attached here, and it is the
+  only service that publishes a port (`5000`) to the host. It is the single
+  entry point for users.
+- **`backend`** — private tier, marked `internal: true` (no route to the
+  internet, unreachable from the host). `web`, `db` and `cache` live here.
+  `db` and `cache` are attached **only** to this network and publish **no
+  ports**.
+
+Why this matters:
+
+- **Users cannot talk to Postgres or Redis directly.** They have no published
+  ports and are not on `frontend`, so `curl localhost:5432` from the host fails.
+  All access is forced through the `web` app.
+- **`web` is the only bridge.** It sits on both networks: it faces users on
+  `frontend` and reaches the data tier on `backend`.
+- **Blast-radius containment.** Because `backend` is `internal`, even a
+  compromised `db`/`cache` cannot reach the internet.
+
+### How to prove the isolation locally
+
+Start the full stack:
+
+```powershell
+docker compose up -d --build
+```
+
+**1. The app can reach the data tier internally** (through the `web` bridge on
+the `backend` network):
+
+```powershell
+curl http://localhost:5000/db-check      # {"database":"ok"}
+curl http://localhost:5000/cache-check   # {"cache":"ok"}
+```
+
+**2. The host cannot reach the data tier directly** (no published ports, not on
+`frontend`):
+
+```powershell
+curl http://localhost:5432    # Postgres: connection refused
+curl http://localhost:6379    # Redis: connection refused
+```
+
+**3. Inspect which services sit on each network** — `db` and `cache` should
+appear only under `backend`, and `web` under both:
+
+```powershell
+docker network inspect ejercicio1_backend
+docker network inspect ejercicio1_frontend
+```
+
+> Compose prefixes network names with the project folder (e.g.
+> `ejercicio1_backend`). Run `docker network ls` to see the exact names.
+
+Tear everything down when done:
+
+```powershell
+docker compose down
+```
+
+## Resilience (restart policy)
+
+All three services (`web`, `db`, `cache`) use `restart: unless-stopped`. This
+means Docker automatically brings a container back up if it crashes or after the
+host/Docker daemon reboots — but it does **not** restart a container that you
+stopped on purpose (e.g. `docker compose stop`), so maintenance is respected.
+
+| Policy            | On crash | After host reboot | After manual stop |
+| ----------------- | -------- | ----------------- | ----------------- |
+| `no`              | ❌       | ❌                | ❌                |
+| `on-failure`      | ✅       | only if running   | ❌                |
+| `always`          | ✅       | ✅                | ✅ (unwanted)     |
+| `unless-stopped`  | ✅       | ✅                | ❌                |
+
+`unless-stopped` is chosen over `always` because it respects a deliberate stop,
+and over `on-failure` because these are long-running services that should also
+survive clean reboots.
+
+> In CI the stack is started and torn down within a single run, so the restart
+> policy has no effect there — it matters on a real, long-lived host.
+
 ## Project structure
 
 ```
@@ -176,6 +287,6 @@ a run with the live logs of every step.
 ├── test_app.py           # Tests for each endpoint
 ├── requirements.txt      # Python dependencies
 ├── Dockerfile            # App image definition
-├── docker-compose.yml    # App + Postgres orchestration
+├── docker-compose.yml    # web + Postgres + Redis, split across two networks
 └── README.md
 ```

@@ -1,6 +1,7 @@
 import os
 
 import psycopg
+import redis
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -14,6 +15,14 @@ def get_db_connection():
         user=os.environ.get("DB_USER", "devops"),
         password=os.environ.get("DB_PASSWORD", "devops"),
         connect_timeout=5,
+    )
+
+
+def get_redis_connection():
+    return redis.Redis(
+        host=os.environ.get("REDIS_HOST", "cache"),
+        port=int(os.environ.get("REDIS_PORT", "6379")),
+        socket_connect_timeout=5,
     )
 
 
@@ -39,6 +48,16 @@ def db_check():
         return jsonify(database="ok")
     except Exception as exc:
         return jsonify(database="error", detail=str(exc)), 503
+
+
+@app.route("/cache-check")
+def cache_check():
+    try:
+        client = get_redis_connection()
+        client.ping()
+        return jsonify(cache="ok")
+    except Exception as exc:
+        return jsonify(cache="error", detail=str(exc)), 503
 
 
 if __name__ == "__main__":

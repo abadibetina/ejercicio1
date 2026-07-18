@@ -45,3 +45,26 @@ def test_db_check_error(client):
     body = response.get_json()
     assert body["database"] == "error"
     assert "connection refused" in body["detail"]
+
+
+def test_cache_check_ok(client):
+    fake_client = MagicMock()
+    fake_client.ping.return_value = True
+
+    with patch.object(app_module, "get_redis_connection", return_value=fake_client):
+        response = client.get("/cache-check")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"cache": "ok"}
+
+
+def test_cache_check_error(client):
+    with patch.object(
+        app_module, "get_redis_connection", side_effect=Exception("cache unreachable")
+    ):
+        response = client.get("/cache-check")
+
+    assert response.status_code == 503
+    body = response.get_json()
+    assert body["cache"] == "error"
+    assert "cache unreachable" in body["detail"]

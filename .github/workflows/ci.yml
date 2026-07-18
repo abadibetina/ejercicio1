@@ -56,6 +56,9 @@ jobs:
       - name: Database connectivity check
         run: curl -fs http://localhost:5000/db-check
 
+      - name: Cache connectivity check
+        run: curl -fs http://localhost:5000/cache-check
+
       - name: Show container logs on failure
         if: failure()
         run: docker compose logs
