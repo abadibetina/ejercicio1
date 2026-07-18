@@ -108,7 +108,7 @@ jobs:
     # --------------------------------------------------------------
     # Condición de disparo: Solo cuando se haga push a la rama main. Esto es lo que hace que este job sea parte de CD y no de CI. La CI corre en cualquier rama, pero el CD solo corre en la rama principal (main o master) porque es la que impacta al entorno real. Cuando se aprueba un Pull Request y se hace merge a main, el pipeline toma como si se estuviera haciendo un push a la rama main.
     # --------------------------------------------------------------
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
 
 
     steps:
